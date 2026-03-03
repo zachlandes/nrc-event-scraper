@@ -33,16 +33,22 @@ uv run nrc-scraper stats
 uv run pytest -v
 ```
 
-## Automated Daily Scrape (GitHub Actions)
+## Automated Daily Scrape
 
-This repo includes a GitHub Actions workflow that runs the scraper daily and commits new events automatically. To use it:
+The scraper can run on a daily schedule via CI — no servers needed. New events get committed back into the repo, so `git pull` always gives you the latest data.
 
-1. Fork this repo
-2. Go to your fork's **Settings > Actions > General** and enable workflows
-3. The scraper runs daily at 6:00 AM UTC (1:00 AM ET)
-4. You can also trigger it manually from **Actions > NRC Event Scraper > Run workflow**
+### GitHub Actions
 
-No API keys, servers, or configuration needed — it runs entirely on GitHub's free CI.
+1. Fork this repo (or push to your own GitHub)
+2. Go to **Settings > Actions > General** and enable workflows
+3. Runs daily at 6:00 AM UTC. Trigger manually from **Actions > NRC Event Scraper > Run workflow**
+
+### GitLab CI
+
+1. Push this repo to GitLab
+2. Create a **Project Access Token** with `write_repository` scope, and add it as a CI variable named `GITLAB_PUSH_TOKEN`
+3. Go to **CI/CD > Schedules** and create a schedule (e.g., daily at `0 6 * * *`)
+4. Trigger manually from **CI/CD > Pipelines > Run pipeline**
 
 ## Output
 
