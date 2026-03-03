@@ -18,10 +18,11 @@ def detect_format(html: str) -> str:
     """
     soup = BeautifulSoup(html, "lxml")
 
-    # Check for no-events pages first
-    strong = soup.find("strong")
-    if strong and "no events found" in strong.get_text(strip=True).lower():
-        return "empty"
+    # Check for no-events pages first (check ALL <strong> tags — the first one
+    # is often the USWDS gov banner "Official websites use .gov")
+    for strong in soup.find_all("strong"):
+        if "no events found" in strong.get_text(strip=True).lower():
+            return "empty"
 
     # Modern format: div.grid.border with id starting with "en"
     modern_events = soup.select('div.grid.border[id^="en"]')
