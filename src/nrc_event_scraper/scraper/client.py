@@ -5,6 +5,9 @@ Implements the strict politeness rules required to avoid IP bans:
 - Fixed browser-like User-Agent (NEVER changes mid-session)
 - Exponential backoff retries on 429/5xx
 - Concurrency limit via semaphore
+
+Uses curl_cffi with Chrome TLS fingerprint impersonation to bypass
+Akamai CDN's TLS fingerprinting (which silently drops httpx/urllib connections).
 """
 
 from __future__ import annotations
@@ -15,7 +18,8 @@ import logging
 import random
 import time
 
-import httpx
+from curl_cffi import CurlError
+from curl_cffi.requests import AsyncSession, Response
 
 from nrc_event_scraper.config import Settings
 
@@ -31,7 +35,11 @@ class ServerError(Exception):
 
 
 class NRCClient:
-    """Async HTTP client with rate limiting and retry for NRC website."""
+    """Async HTTP client with rate limiting and retry for NRC website.
+
+    Uses curl_cffi to impersonate Chrome's TLS fingerprint, which is required
+    to connect to NRC's Akamai CDN without being silently dropped.
+    """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
@@ -40,19 +48,16 @@ class NRCClient:
         self._lock = asyncio.Lock()
 
     async def __aenter__(self) -> NRCClient:
-        self._http = httpx.AsyncClient(
+        self._session = AsyncSession(
             headers=self.settings.headers,
-            timeout=httpx.Timeout(
-                self.settings.read_timeout,
-                connect=self.settings.connect_timeout,
-            ),
-            follow_redirects=True,
-            http2=False,  # NRC only supports HTTP/1.1
+            impersonate="chrome131",
+            timeout=(self.settings.connect_timeout, self.settings.read_timeout),
+            allow_redirects=True,
         )
         return self
 
     async def __aexit__(self, *args) -> None:
-        await self._http.aclose()
+        await self._session.close()
 
     async def _wait_for_rate_limit(self) -> None:
         """Token-bucket style rate limiter: wait until enough time has passed."""
@@ -79,14 +84,14 @@ class NRCClient:
             return await self._fetch_with_retry(url)
 
     async def _fetch_with_retry(self, url: str) -> tuple[str, int, str]:
-        """Fetch with tenacity retry on 429/5xx."""
+        """Fetch with retry on 429/5xx/timeout."""
         last_error: Exception | None = None
 
         for attempt in range(self.settings.max_retries):
             await self._wait_for_rate_limit()
 
             try:
-                response = await self._http.get(url)
+                response: Response = await self._session.get(url)
 
                 if response.status_code == 429:
                     wait = (self.settings.retry_backoff_base ** attempt) + random.uniform(0, 1)
@@ -109,26 +114,22 @@ class NRCClient:
                     logger.info("404 not found: %s", url)
                     return "", 404, ""
 
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    raise CurlError(
+                        f"HTTP {response.status_code} for {url}"
+                    )
 
                 content = response.text
                 sha256 = hashlib.sha256(content.encode()).hexdigest()
                 return content, response.status_code, sha256
 
-            except httpx.TimeoutException as e:
+            except CurlError as e:
                 last_error = e
                 wait = (self.settings.retry_backoff_base ** attempt) + random.uniform(0, 1)
                 logger.warning(
-                    "Timeout on %s (attempt %d), backing off %.1fs",
-                    url, attempt + 1, wait,
+                    "Request error on %s (attempt %d): %s, backing off %.1fs",
+                    url, attempt + 1, e, wait,
                 )
-                await asyncio.sleep(wait)
-            except httpx.HTTPStatusError:
-                raise
-            except httpx.HTTPError as e:
-                last_error = e
-                wait = (self.settings.retry_backoff_base ** attempt) + random.uniform(0, 1)
-                logger.warning("HTTP error on %s: %s", url, e)
                 await asyncio.sleep(wait)
 
         raise last_error or RuntimeError(

@@ -1,9 +1,9 @@
 """Tests for the orchestrator with mocked HTTP."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import respx
 
 from nrc_event_scraper.config import Settings
 from nrc_event_scraper.orchestrator import Orchestrator
@@ -79,20 +79,48 @@ EMPTY_PAGE_HTML = """
 """
 
 
-@respx.mock
+def _mock_response(status_code=200, text=""):
+    """Create a mock curl_cffi Response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    return resp
+
+
+def _make_url_router(base_url, routes):
+    """Create an async mock that routes URLs to responses.
+
+    routes: dict mapping URL suffix to (status_code, text) tuples.
+    """
+    async def router(url, **kwargs):
+        for suffix, (status, text) in routes.items():
+            if url.endswith(suffix):
+                return _mock_response(status, text)
+        return _mock_response(404, "")
+    return router
+
+
 @pytest.mark.asyncio
 async def test_backfill_full_pipeline(orch_settings: Settings):
     """Integration test: backfill discovers, fetches, and parses pages."""
-    base = orch_settings.nrc_base_url
+    routes = {
+        "/2026/index.html": (200, YEAR_INDEX_HTML),
+        "/2026/20260101en": (200, MODERN_PAGE_HTML),
+        "/2026/20260102en": (200, EMPTY_PAGE_HTML),
+    }
 
-    # Mock year index
-    respx.get(f"{base}/2026/index.html").respond(200, text=YEAR_INDEX_HTML)
-    # Mock daily pages
-    respx.get(f"{base}/2026/20260101en").respond(200, text=MODERN_PAGE_HTML)
-    respx.get(f"{base}/2026/20260102en").respond(200, text=EMPTY_PAGE_HTML)
+    with patch(
+        "nrc_event_scraper.scraper.client.AsyncSession"
+    ) as MockSession:
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(side_effect=_make_url_router("", routes))
+        mock_session.close = AsyncMock()
+        mock_session.headers = orch_settings.headers
+        mock_session.impersonate = "chrome131"
+        MockSession.return_value = mock_session
 
-    orch = Orchestrator(orch_settings)
-    stats = await orch.backfill(years=[2026])
+        orch = Orchestrator(orch_settings)
+        stats = await orch.backfill(years=[2026])
 
     assert stats["pages_discovered"] == 2
     assert stats["pages_fetched"] == 2
@@ -112,27 +140,46 @@ async def test_backfill_full_pipeline(orch_settings: Settings):
     assert db_stats["pages_by_status"]["parsed"] == 2
 
 
-@respx.mock
 @pytest.mark.asyncio
 async def test_backfill_idempotent(orch_settings: Settings):
     """Running backfill twice should not duplicate events."""
-    base = orch_settings.nrc_base_url
-
-    respx.get(f"{base}/2026/index.html").respond(200, text=YEAR_INDEX_HTML)
-    respx.get(f"{base}/2026/20260101en").respond(200, text=MODERN_PAGE_HTML)
-    respx.get(f"{base}/2026/20260102en").respond(200, text=EMPTY_PAGE_HTML)
+    routes = {
+        "/2026/index.html": (200, YEAR_INDEX_HTML),
+        "/2026/20260101en": (200, MODERN_PAGE_HTML),
+        "/2026/20260102en": (200, EMPTY_PAGE_HTML),
+    }
 
     orch = Orchestrator(orch_settings)
 
     # First run
-    stats1 = await orch.backfill(years=[2026])
+    with patch(
+        "nrc_event_scraper.scraper.client.AsyncSession"
+    ) as MockSession:
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(side_effect=_make_url_router("", routes))
+        mock_session.close = AsyncMock()
+        mock_session.headers = orch_settings.headers
+        mock_session.impersonate = "chrome131"
+        MockSession.return_value = mock_session
+
+        stats1 = await orch.backfill(years=[2026])
     assert stats1["events_found"] == 1
 
     # Second run — pages already parsed, should skip
-    respx.reset()
-    respx.get(f"{base}/2026/index.html").respond(200, text=YEAR_INDEX_HTML)
-    # Daily pages shouldn't be fetched again since they're already parsed
-    stats2 = await orch.backfill(years=[2026])
+    index_only_routes = {
+        "/2026/index.html": (200, YEAR_INDEX_HTML),
+    }
+    with patch(
+        "nrc_event_scraper.scraper.client.AsyncSession"
+    ) as MockSession:
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(side_effect=_make_url_router("", index_only_routes))
+        mock_session.close = AsyncMock()
+        mock_session.headers = orch_settings.headers
+        mock_session.impersonate = "chrome131"
+        MockSession.return_value = mock_session
+
+        stats2 = await orch.backfill(years=[2026])
     assert stats2["pages_fetched"] == 0
     assert stats2["pages_parsed"] == 0
 
@@ -141,66 +188,100 @@ async def test_backfill_idempotent(orch_settings: Settings):
     assert len(events) == 1
 
 
-@respx.mock
 @pytest.mark.asyncio
 async def test_backfill_with_fetch_error(orch_settings: Settings):
     """Fetch errors should be recorded but not crash the pipeline."""
-    base = orch_settings.nrc_base_url
+    routes = {
+        "/2026/index.html": (200, YEAR_INDEX_HTML),
+        "/2026/20260101en": (200, MODERN_PAGE_HTML),
+        "/2026/20260102en": (500, ""),
+    }
 
-    respx.get(f"{base}/2026/index.html").respond(200, text=YEAR_INDEX_HTML)
-    respx.get(f"{base}/2026/20260101en").respond(200, text=MODERN_PAGE_HTML)
-    respx.get(f"{base}/2026/20260102en").respond(500)
+    with patch(
+        "nrc_event_scraper.scraper.client.AsyncSession"
+    ) as MockSession:
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(side_effect=_make_url_router("", routes))
+        mock_session.close = AsyncMock()
+        mock_session.headers = orch_settings.headers
+        mock_session.impersonate = "chrome131"
+        MockSession.return_value = mock_session
 
-    orch = Orchestrator(orch_settings)
-    stats = await orch.backfill(years=[2026])
+        orch = Orchestrator(orch_settings)
+        stats = await orch.backfill(years=[2026])
 
     assert stats["pages_fetched"] == 1
     assert stats["errors"] == 1  # The 500 error page
     assert stats["events_found"] == 1
 
     # Error page should be marked in DB
+    base = orch_settings.nrc_base_url
     error_page = orch.db.get_page(f"{base}/2026/20260102en")
     assert error_page["status"] == "error"
 
 
-@respx.mock
 @pytest.mark.asyncio
 async def test_backfill_force_refetch(orch_settings: Settings):
     """--force should re-fetch already processed pages."""
-    base = orch_settings.nrc_base_url
-
-    respx.get(f"{base}/2026/index.html").respond(200, text=YEAR_INDEX_HTML)
-    respx.get(f"{base}/2026/20260101en").respond(200, text=MODERN_PAGE_HTML)
-    respx.get(f"{base}/2026/20260102en").respond(200, text=EMPTY_PAGE_HTML)
+    routes = {
+        "/2026/index.html": (200, YEAR_INDEX_HTML),
+        "/2026/20260101en": (200, MODERN_PAGE_HTML),
+        "/2026/20260102en": (200, EMPTY_PAGE_HTML),
+    }
 
     orch = Orchestrator(orch_settings)
 
     # First run
-    await orch.backfill(years=[2026])
+    with patch(
+        "nrc_event_scraper.scraper.client.AsyncSession"
+    ) as MockSession:
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(side_effect=_make_url_router("", routes))
+        mock_session.close = AsyncMock()
+        mock_session.headers = orch_settings.headers
+        mock_session.impersonate = "chrome131"
+        MockSession.return_value = mock_session
+
+        await orch.backfill(years=[2026])
 
     # Force re-run — should fetch again
-    respx.reset()
-    respx.get(f"{base}/2026/index.html").respond(200, text=YEAR_INDEX_HTML)
-    respx.get(f"{base}/2026/20260101en").respond(200, text=MODERN_PAGE_HTML)
-    respx.get(f"{base}/2026/20260102en").respond(200, text=EMPTY_PAGE_HTML)
+    with patch(
+        "nrc_event_scraper.scraper.client.AsyncSession"
+    ) as MockSession:
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(side_effect=_make_url_router("", routes))
+        mock_session.close = AsyncMock()
+        mock_session.headers = orch_settings.headers
+        mock_session.impersonate = "chrome131"
+        MockSession.return_value = mock_session
 
-    stats = await orch.backfill(years=[2026], force=True)
+        stats = await orch.backfill(years=[2026], force=True)
     assert stats["pages_fetched"] == 2
 
 
-@respx.mock
 @pytest.mark.asyncio
 async def test_html_archived_before_parsing(orch_settings: Settings):
     """Raw HTML should be archived before any parsing occurs."""
+    routes = {
+        "/2026/index.html": (200, YEAR_INDEX_HTML),
+        "/2026/20260101en": (200, MODERN_PAGE_HTML),
+        "/2026/20260102en": (200, EMPTY_PAGE_HTML),
+    }
+
+    with patch(
+        "nrc_event_scraper.scraper.client.AsyncSession"
+    ) as MockSession:
+        mock_session = MagicMock()
+        mock_session.get = AsyncMock(side_effect=_make_url_router("", routes))
+        mock_session.close = AsyncMock()
+        mock_session.headers = orch_settings.headers
+        mock_session.impersonate = "chrome131"
+        MockSession.return_value = mock_session
+
+        orch = Orchestrator(orch_settings)
+        await orch.backfill(years=[2026])
+
     base = orch_settings.nrc_base_url
-
-    respx.get(f"{base}/2026/index.html").respond(200, text=YEAR_INDEX_HTML)
-    respx.get(f"{base}/2026/20260101en").respond(200, text=MODERN_PAGE_HTML)
-    respx.get(f"{base}/2026/20260102en").respond(200, text=EMPTY_PAGE_HTML)
-
-    orch = Orchestrator(orch_settings)
-    await orch.backfill(years=[2026])
-
     # Check archives exist
     assert orch.archive.exists(f"{base}/2026/20260101en")
     assert orch.archive.exists(f"{base}/2026/20260102en")
