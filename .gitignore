@@ -5,9 +5,8 @@ __pycache__/
 dist/
 .venv/
 
-# Data (large files, not in git)
+# Raw HTML archive (large, keep local only)
 data/html/
-data/events/
 
 # IDE
 .vscode/
@@ -18,6 +17,3 @@ data/events/
 
 # Environment
 .env
-
-# SQLite
-*.db

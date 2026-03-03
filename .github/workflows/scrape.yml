@@ -1,0 +1,43 @@
+name: NRC Event Scraper
+
+on:
+  schedule:
+    # Run daily at 6:00 AM UTC (1:00 AM ET, after NRC publishes)
+    - cron: "0 6 * * *"
+  workflow_dispatch: # Allow manual runs from GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run incremental scrape (current year)
+        run: uv run nrc-scraper incremental
+
+      - name: Show stats
+        run: uv run nrc-scraper stats
+
+      - name: Commit new data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/events/ data/scraper.db
+          if git diff --cached --quiet; then
+            echo "No new events to commit"
+          else
+            git commit -m "data: daily scrape $(date -u +%Y-%m-%d)"
+            git push
+          fi
