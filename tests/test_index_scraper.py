@@ -59,6 +59,25 @@ def test_extract_daily_page_urls_filters_non_event_links():
     assert len(urls) == 1
 
 
+def test_extract_daily_page_urls_legacy_html_suffix():
+    """Legacy year indexes use ./YYYYMMDDen.html links."""
+    index_html = """
+    <html><body>
+    <a href="./20051230en.html">December 30</a>
+    <a href="./20051229en.html">December 29</a>
+    <a href="./20051228en.html">December 28</a>
+    </body></html>
+    """
+    base = "https://www.nrc.gov/reading-rm/doc-collections/event-status/event"
+    urls = extract_daily_page_urls(index_html, base, 2005)
+
+    assert len(urls) == 3
+    # URLs should be normalized without .html
+    assert urls[0].endswith("20051228en")
+    assert ".html" not in urls[0]
+    assert urls[0].startswith("https://")
+
+
 def test_url_to_report_date():
     assert url_to_report_date("https://example.com/2026/20260303en") == "2026-03-03"
     assert url_to_report_date("https://example.com/2019/20190301en") == "2019-03-01"

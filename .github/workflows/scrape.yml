@@ -48,12 +48,10 @@ jobs:
               if echo "$YEARS" | grep -q '-'; then
                 START=$(echo "$YEARS" | cut -d'-' -f1)
                 END=$(echo "$YEARS" | cut -d'-' -f2)
-                YEAR_ARGS=""
-                for y in $(seq "$START" "$END"); do
-                  YEAR_ARGS="$YEAR_ARGS --years $y"
-                done
+                # Build comma-separated list: 2020,2021,2022,...
+                CSV=$(seq "$START" "$END" | paste -sd, -)
                 echo "Backfilling years $START–$END"
-                uv run nrc-scraper backfill $YEAR_ARGS
+                uv run nrc-scraper backfill --years "$CSV"
               else
                 echo "Backfilling year $YEARS"
                 uv run nrc-scraper backfill --years "$YEARS"
