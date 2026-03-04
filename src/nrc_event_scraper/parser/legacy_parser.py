@@ -119,8 +119,8 @@ def _find_next_table(element: Tag) -> Tag | None:
         if isinstance(current, Tag):
             if current.name == "table":
                 return current
-            # Skip <br> tags between anchor and table
-            if current.name not in ("br",):
+            # Skip <br> and empty <a> tags between anchor and table
+            if current.name not in ("br", "a"):
                 return None
         current = current.next_sibling
     return None
