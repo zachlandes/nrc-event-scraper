@@ -89,7 +89,7 @@ def parse_persons(text: str) -> list[PersonContact]:
             PersonContact(name='NMSS_EVENTS_NOTIFICATION', organization='EMAIL')
     """
     persons = []
-    lines = re.split(r"[\n<br>]+", text)
+    lines = re.split(r"\n|<br\s*/?>", text)
     for line in lines:
         line = normalize_whitespace(line)
         if not line or line.lower().startswith("person"):
