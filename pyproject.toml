@@ -30,6 +30,7 @@ dashboard = [
     "plotly>=5.22",
     "wordcloud>=1.9",
     "matplotlib>=3.9",
+    "openpyxl>=3.1",
 ]
 
 [project.scripts]
